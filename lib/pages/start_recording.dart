@@ -3,8 +3,12 @@ import 'package:camera/camera.dart';
 import 'package:hemoglobin_predictor/pages/result.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
+import 'dart:io'; // ✅ for video size
 
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class StartRecording extends StatefulWidget {
@@ -14,7 +18,8 @@ class StartRecording extends StatefulWidget {
   State<StartRecording> createState() => _StartRecordingState();
 }
 
-class _StartRecordingState extends State<StartRecording> {
+class _StartRecordingState extends State<StartRecording>
+    with WidgetsBindingObserver {
   CameraController? _cameraController;
   bool _isInitialized = false;
   bool _isRecording = false;
@@ -26,16 +31,59 @@ class _StartRecordingState extends State<StartRecording> {
   // Timer variables
   int _recordingSeconds = 0;
   Timer? _recordingTimer;
-  static const int _maxRecordingDuration = 10; // 15 seconds
+  static const int _maxRecordingDuration = 15; // ✅ 15 seconds
 
   // Focus animation
   Offset? _focusPoint;
   bool _showFocusCircle = false;
 
+  // ✅ Guard to avoid double stop
+  bool _isStoppingRecording = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // ✅ watch lifecycle
     _initializeCamera();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // ✅ Handle background / foreground transitions safely
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      // App going to background – release camera
+      _stopTimer();
+      _disposeCameraController();
+    } else if (state == AppLifecycleState.resumed) {
+      // App back – re-init if not uploading and controller is null
+      if (!_isUploading && _cameraController == null) {
+        _initializeCamera();
+      }
+    }
+  }
+
+  Future<void> _disposeCameraController() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    _isInitialized = false;
+
+    if (controller == null) return;
+
+    try {
+      if (controller.value.isRecordingVideo) {
+        print('⚠️ Disposing while recording, stopping first...');
+        await controller.stopVideoRecording();
+      }
+    } catch (e) {
+      debugPrint('Error stopping recording during dispose: $e');
+    }
+
+    try {
+      await controller.dispose();
+    } catch (e) {
+      debugPrint('Error disposing camera controller: $e');
+    }
   }
 
   Future<void> _initializeCamera() async {
@@ -46,6 +94,8 @@ class _StartRecordingState extends State<StartRecording> {
       print('📱 Requesting camera permission...');
       final status = await Permission.camera.request();
       print('✅ Camera permission status: $status');
+
+      if (!mounted) return;
 
       if (status.isDenied) {
         setState(() {
@@ -68,6 +118,8 @@ class _StartRecordingState extends State<StartRecording> {
       final cameras = await availableCameras();
       print('✅ Found ${cameras.length} cameras');
 
+      if (!mounted) return;
+
       if (cameras.isEmpty) {
         setState(() {
           _errorMessage = 'No cameras found on this device';
@@ -82,31 +134,39 @@ class _StartRecordingState extends State<StartRecording> {
 
       print('🎯 Selected camera: ${backCamera.name}');
 
-      _cameraController = CameraController(
+      // ✅ Prefer 720p (ResolutionPreset.high ~ 720p)
+      final controller = CameraController(
         backCamera,
-        ResolutionPreset.high,
+        ResolutionPreset.high, // 720p on most devices
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
+        imageFormatGroup: ImageFormatGroup.yuv420,
       );
 
+      _cameraController = controller;
+
       print('⚙️ Initializing camera controller...');
-      await _cameraController!.initialize();
+      await controller.initialize();
       print('✅ Camera initialized successfully');
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
 
       // Set focus mode to auto
       try {
-        await _cameraController!.setFocusMode(FocusMode.auto);
+        await controller.setFocusMode(FocusMode.auto);
         print('✅ Focus mode set to auto');
       } catch (e) {
         print('⚠️ Could not set focus mode: $e');
       }
 
       // Check if flash is available
-      final hasFlash = _cameraController!.value.flashMode != null;
+      final hasFlash = controller.value.flashMode != null;
       print('💡 Flash available: $hasFlash');
 
       if (hasFlash) {
-        await _cameraController!.setFlashMode(FlashMode.torch);
+        await controller.setFlashMode(FlashMode.torch);
         print('✅ Flash mode set to torch');
       } else {
         print('⚠️ Flash not available on this device');
@@ -152,13 +212,15 @@ class _StartRecordingState extends State<StartRecording> {
       await _cameraController!.setFocusPoint(offset);
       await _cameraController!.setExposurePoint(offset);
 
+      if (!mounted) return;
+
       setState(() {
         _focusPoint = details.localPosition;
         _showFocusCircle = true;
       });
 
       // Hide focus circle after 2 seconds
-      Future.delayed(Duration(seconds: 2), () {
+      Future.delayed(const Duration(seconds: 2), () {
         if (mounted) {
           setState(() {
             _showFocusCircle = false;
@@ -178,13 +240,13 @@ class _StartRecordingState extends State<StartRecording> {
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
-          children: [
+          children: const [
             Icon(Icons.settings, color: Color(0xFFD64545), size: 28),
             SizedBox(width: 8),
             Text('Permission Required'),
           ],
         ),
-        content: Text(
+        content: const Text(
           'Camera permission is permanently denied. Please enable it in Settings to use this feature.',
         ),
         actions: [
@@ -193,14 +255,14 @@ class _StartRecordingState extends State<StartRecording> {
               Navigator.pop(context);
               Navigator.pop(context);
             },
-            child: Text('Cancel', style: TextStyle(color: Colors.grey)),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           TextButton(
             onPressed: () {
               openAppSettings();
               Navigator.pop(context);
             },
-            child: Text(
+            child: const Text(
               'Open Settings',
               style: TextStyle(color: Color(0xFFD64545)),
             ),
@@ -228,12 +290,19 @@ class _StartRecordingState extends State<StartRecording> {
 
   void _startTimer() {
     _recordingSeconds = 0;
-    _recordingTimer = Timer.periodic(Duration(seconds: 1), (timer) {
+    _recordingTimer?.cancel();
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
       setState(() {
         _recordingSeconds++;
       });
 
       if (_recordingSeconds >= _maxRecordingDuration) {
+        // ⏱️ Auto-stop – uses same guard inside _stopRecording
         _stopRecording();
       }
     });
@@ -253,10 +322,12 @@ class _StartRecordingState extends State<StartRecording> {
   Future<void> _startRecording() async {
     if (_cameraController != null &&
         _cameraController!.value.isInitialized &&
-        !_isRecording) {
+        !_isRecording &&
+        !_isStoppingRecording) {
       try {
         print('🎬 Starting video recording...');
         await _cameraController!.startVideoRecording();
+        if (!mounted) return;
         setState(() {
           _isRecording = true;
         });
@@ -270,197 +341,333 @@ class _StartRecordingState extends State<StartRecording> {
   }
 
   Future<void> _stopRecording() async {
-    if (_cameraController != null && _isRecording) {
-      try {
-        print('⏹️ Stopping video recording...');
-        _stopTimer();
+    // ✅ Re-entrancy guard
+    if (_isStoppingRecording) {
+      print('⏹️ _stopRecording called but already stopping, ignoring...');
+      return;
+    }
 
-        _videoFile = await _cameraController!.stopVideoRecording();
+    if (_cameraController == null) {
+      print('⏹️ _stopRecording called with null controller, ignoring...');
+      return;
+    }
+
+    if (!_isRecording) {
+      print('⏹️ _stopRecording called but _isRecording=false, ignoring...');
+      return;
+    }
+
+    _isStoppingRecording = true;
+    try {
+      print('⏹️ Stopping video recording...');
+      _stopTimer();
+
+      final controller = _cameraController!;
+
+      if (!controller.value.isRecordingVideo) {
+        print(
+          '⚠️ Controller not in recording state, skip stopVideoRecording()',
+        );
+      } else {
+        _videoFile = await controller.stopVideoRecording();
         print('✅ Recording stopped. File: ${_videoFile!.path}');
+      }
 
+      if (_videoFile == null) {
+        throw Exception('No video file returned from stopVideoRecording()');
+      }
+
+      // ✅ Print video size
+      try {
+        final file = File(_videoFile!.path);
+        final bytes = await file.length();
+        final sizeMB = bytes / (1024 * 1024);
+        print('📁 Video size: $bytes bytes (${sizeMB.toStringAsFixed(2)} MB)');
+      } catch (e) {
+        print('⚠️ Could not read video file size: $e');
+      }
+
+      if (mounted) {
         setState(() {
           _isRecording = false;
         });
-
-        await _cameraController!.setFlashMode(FlashMode.off);
-        await _cameraController?.dispose();
-        _cameraController = null;
-
-        await _sendVideoToBackend(_videoFile!.path);
-      } catch (e) {
-        print('❌ Error stopping recording: $e');
-        _showErrorDialog('Failed to stop recording: $e');
       }
+
+      // ✅ Just turn off flash, DO NOT dispose controller here
+      try {
+        if (controller.value.isInitialized) {
+          await controller.setFlashMode(FlashMode.off);
+        }
+        _isFlashOn = false;
+      } catch (e) {
+        print('⚠️ Error turning flash off after recording: $e');
+      }
+
+      await _sendVideoToBackend(_videoFile!.path);
+    } catch (e) {
+      print('❌ Error stopping recording: $e');
+      _showErrorDialog('Failed to stop recording: $e');
+    } finally {
+      _isStoppingRecording = false;
     }
   }
 
-  Map<String, dynamic> generateHbStatus() {
-    final random = Random();
-
-    // Generate Hb with weighted probability towards normal range (12-16 g/dL)
-    // 70% normal, 20% low, 10% high
-    double hb;
-    final probability = random.nextDouble();
-
-    if (probability < 0.70) {
-      // 70% chance: Normal range (12.0 - 16.5 g/dL)
-      hb = 12.0 + random.nextDouble() * 4.5;
-    } else if (probability < 0.90) {
-      // 20% chance: Low range (8.0 - 11.9 g/dL)
-      hb = 8.0 + random.nextDouble() * 3.9;
-    } else {
-      // 10% chance: High range (16.6 - 20.0 g/dL)
-      hb = 16.6 + random.nextDouble() * 3.4;
-    }
-
-    hb = double.parse(hb.toStringAsFixed(1));
+  /// Build Hb status + message + recommendation from a given Hb value.
+  /// 👉 Simplified: only uses gender + hb. Ignores age and pregnancy.
+  Map<String, dynamic> _buildHbStatusFromValue({
+    required double hb,
+    int? ageYears, // ignored for now
+    String? gender, // ignored for now
+  }) {
+    // Normalize gender
+    final g = gender?.toLowerCase();
 
     String status;
-    String message;
-    String recommendation;
 
-    if (hb < 12.0) {
-      status = 'Low';
-
-      if (hb < 8.5) {
-        // Severely low
-        message =
-            'Your hemoglobin level is significantly below normal. This indicates severe anemia, which can cause extreme fatigue, shortness of breath, dizziness, and pale skin.';
-        recommendation =
-            '⚠️ Immediate Action Required:\n'
-            '• Consult a doctor immediately for proper diagnosis\n'
-            '• You may need iron supplements or medical treatment\n'
-            '• Eat iron-rich foods: red meat, liver, spinach, lentils\n'
-            '• Include vitamin C to boost iron absorption (citrus fruits)\n'
-            '• Avoid tea/coffee with meals as they reduce iron absorption';
-      } else if (hb < 10.0) {
-        // Moderately low
-        message =
-            'Your hemoglobin level is moderately low. This can cause fatigue, weakness, headaches, and difficulty concentrating. You may experience shortness of breath during physical activity.';
-        recommendation =
-            '⚠️ Medical Attention Recommended:\n'
-            '• Schedule an appointment with your doctor\n'
-            '• Increase iron intake: eggs, fish, dried fruits, beans\n'
-            '• Add folate-rich foods: broccoli, peas, fortified cereals\n'
-            '• Consider vitamin B12: dairy, eggs, fortified foods\n'
-            '• Get adequate rest and avoid strenuous activities';
-      } else {
-        // Mildly low
-        message =
-            'Your hemoglobin level is slightly below normal. You might feel occasional tiredness or weakness, especially after physical exertion.';
-        recommendation =
-            '💡 Dietary Improvements Suggested:\n'
-            '• Increase iron-rich foods: lean meat, tofu, pumpkin seeds\n'
-            '• Pair iron sources with vitamin C (oranges, tomatoes)\n'
-            '• Include dark leafy greens: kale, spinach, Swiss chard\n'
-            '• Add whole grains and legumes to your diet\n'
-            '• Monitor your levels and consult a doctor if symptoms persist';
-      }
-    } else if (hb >= 12.0 && hb <= 16.5) {
-      status = 'Normal';
-
-      if (hb >= 12.0 && hb < 13.5) {
-        message =
-            'Your hemoglobin level is in the healthy range, towards the lower end of normal. This is generally fine, but maintaining good nutrition is important.';
-        recommendation =
-            '✅ Maintain Healthy Habits:\n'
-            '• Continue eating a balanced diet with adequate iron\n'
-            '• Include protein sources: chicken, fish, legumes, nuts\n'
-            '• Stay hydrated and get regular exercise\n'
-            '• Ensure sufficient sleep (7-9 hours daily)\n'
-            '• Regular health checkups to monitor your levels';
-      } else if (hb >= 13.5 && hb <= 15.0) {
-        message =
-            'Excellent! Your hemoglobin level is in the optimal healthy range. You should have good energy levels and normal oxygen delivery throughout your body.';
-        recommendation =
-            '✅ Keep Up the Good Work:\n'
-            '• Maintain your current healthy lifestyle\n'
-            '• Continue balanced diet with iron, B12, and folate\n'
-            '• Stay physically active with regular exercise\n'
-            '• Adequate hydration (8-10 glasses of water daily)\n'
-            '• Annual health checkups for preventive care';
-      } else {
-        message =
-            'Your hemoglobin level is in the healthy range, towards the upper end of normal. This is typically a sign of good health and fitness.';
-        recommendation =
-            '✅ Excellent Health Status:\n'
-            '• Continue your healthy eating habits\n'
-            '• Stay active and maintain fitness routine\n'
-            '• Ensure proper hydration throughout the day\n'
-            '• Balance iron intake - no need for supplements\n'
-            '• Regular monitoring during annual checkups';
-      }
+    if (g == "male") {
+      // Adult male ranges
+      status = _categorizeWithBands(
+        hb,
+        normalMin: 13.0,
+        normalMax: 17.5,
+        mildMin: 11.0,
+        mildMax: 11.9,
+        moderateMin: 8.0,
+        moderateMax: 10.9,
+        severeMax: 8.0,
+      );
+    } else if (g == "female") {
+      // Adult female ranges (non-pregnant)
+      status = _categorizeWithBands(
+        hb,
+        normalMin: 12.0,
+        normalMax: 15.5,
+        mildMin: 11.0,
+        mildMax: 11.9,
+        moderateMin: 8.0,
+        moderateMax: 10.9,
+        severeMax: 8.0,
+      );
     } else {
-      status = 'High';
+      // Generic adult range if gender is unknown
+      status = _categorizeSimple(hb, normalMin: 12.0, normalMax: 16.5);
+    }
 
-      if (hb > 18.0) {
-        message =
-            'Your hemoglobin level is significantly above normal. This condition (polycythemia) can increase blood thickness, potentially leading to blood clots, headaches, and dizziness.';
-        recommendation =
-            '⚠️ Medical Consultation Required:\n'
-            '• See a doctor as soon as possible for evaluation\n'
-            '• This may require medical investigation and treatment\n'
-            '• Stay well-hydrated to prevent blood thickening\n'
-            '• Avoid smoking and excessive alcohol consumption\n'
-            '• Do not take iron supplements without medical advice';
-      } else if (hb > 17.0) {
-        message =
-            'Your hemoglobin level is moderately elevated. This could be due to dehydration, smoking, living at high altitude, or an underlying condition requiring medical attention.';
-        recommendation =
-            '⚠️ Recommended Actions:\n'
-            '• Consult your doctor for proper evaluation\n'
-            '• Increase water intake significantly (10-12 glasses daily)\n'
-            '• Avoid iron supplements unless prescribed\n'
-            '• Monitor for symptoms: headaches, fatigue, blurred vision\n'
-            '• If you smoke, consider quitting programs';
+    // Always build rich message + recommendation from status + hb
+    final msg = _messages(status, hb);
+
+    return {
+      "hb": double.parse(hb.toStringAsFixed(1)),
+      "status": status,
+      "message": msg["message"],
+      "recommendation": msg["recommendation"],
+    };
+  }
+
+  // ------------------------------------------------------------
+  // Helper — Full WHO anemia category logic
+  // ------------------------------------------------------------
+  String _categorizeWithBands(
+    double hb, {
+    required double normalMin,
+    required double normalMax,
+    double? mildMin,
+    double? mildMax,
+    double? moderateMin,
+    double? moderateMax,
+    double? severeMax,
+  }) {
+    if (hb >= normalMin && hb <= normalMax) return "Normal";
+    if (mildMin != null && mildMax != null && hb >= mildMin && hb <= mildMax) {
+      return "Mild anemia";
+    }
+    if (moderateMin != null &&
+        moderateMax != null &&
+        hb >= moderateMin &&
+        hb <= moderateMax) {
+      return "Moderate anemia";
+    }
+    if (severeMax != null && hb < severeMax) return "Severe anemia";
+    if (hb > normalMax) return "High";
+    return "Low";
+  }
+
+  // ------------------------------------------------------------
+  // Helper — only normal range is defined
+  // ------------------------------------------------------------
+  String _categorizeSimple(
+    double hb, {
+    required double normalMin,
+    required double normalMax,
+  }) {
+    if (hb >= normalMin && hb <= normalMax) return "Normal";
+    if (hb < normalMin) return "Low";
+    return "High";
+  }
+
+  // ------------------------------------------------------------
+  // Message Builder (rich messages + recommendations)
+  // ------------------------------------------------------------
+  Map<String, String> _messages(String status, double hb) {
+    final s = status.toLowerCase();
+
+    if (s.contains("severe")) {
+      return {
+        "message":
+            "Your hemoglobin level is significantly below the normal range for your age and profile. "
+            "This suggests severe anemia, which can cause extreme fatigue, shortness of breath, dizziness, and pale skin.",
+        "recommendation":
+            "⚠️ Immediate Action Required:\n"
+            "• Consult a doctor or visit a hospital as soon as possible for detailed evaluation\n"
+            "• Your doctor may prescribe iron supplements, injections, or other specific treatments\n"
+            "• Eat iron-rich foods: red meat, liver, spinach, lentils, chickpeas, jaggery\n"
+            "• Include vitamin C sources (lemon, orange, amla) to improve iron absorption\n"
+            "• Avoid tea/coffee close to meals as they reduce iron absorption\n"
+            "• Do not self-medicate with high-dose iron without medical advice",
+      };
+    }
+
+    if (s.contains("moderate")) {
+      return {
+        "message":
+            "Your hemoglobin level is moderately below the expected range. This can cause tiredness, weakness, headaches, "
+            "reduced exercise capacity, and difficulty concentrating.",
+        "recommendation":
+            "⚠️ Medical Attention Recommended:\n"
+            "• Book an appointment with your doctor for further tests and a proper diagnosis\n"
+            "• Increase intake of iron-rich foods: eggs, fish, leafy greens, beans, peas, dry fruits\n"
+            "• Add folate-rich foods: broccoli, beetroot, peas, fortified cereals\n"
+            "• Ensure adequate vitamin B12: milk, curd, paneer, eggs, or fortified foods\n"
+            "• Get enough rest and avoid very strenuous activity until levels improve\n"
+            "• Follow up with repeat Hb tests as advised by your doctor",
+      };
+    }
+
+    if (s.contains("mild") ||
+        s.contains("borderline low") ||
+        s.contains("mild anemia") ||
+        s == "low") {
+      return {
+        "message":
+            "Your hemoglobin level is slightly below the normal range. You may feel mild tiredness, weakness, or reduced stamina, "
+            "especially during physical activity.",
+        "recommendation":
+            "💡 Dietary & Lifestyle Improvements Suggested:\n"
+            "• Focus on iron-rich foods: lean meat, chicken, tofu, spinach, pumpkin seeds, lentils\n"
+            "• Combine iron sources with vitamin C (lemon, oranges, guava, tomatoes) to improve absorption\n"
+            "• Include dark leafy greens and whole grains regularly in your meals\n"
+            "• Avoid skipping meals and try to maintain a regular, balanced diet\n"
+            "• If symptoms persist (fatigue, paleness, breathlessness), consult a doctor for evaluation\n"
+            "• Periodically recheck your Hb level as advised",
+      };
+    }
+
+    if (s.contains("normal")) {
+      return {
+        "message":
+            "Your hemoglobin level is within the healthy range for your age and profile. This suggests good oxygen-carrying capacity "
+            "and generally adequate nutrition.",
+        "recommendation":
+            "✅ Maintain Healthy Habits:\n"
+            "• Continue a balanced diet with sufficient iron, vitamin B12, and folate\n"
+            "• Include protein sources: pulses, dairy products, eggs, chicken, fish, nuts and seeds\n"
+            "• Stay physically active with regular, moderate exercise\n"
+            "• Drink enough water throughout the day and sleep 7–9 hours daily (for adults)\n"
+            "• Go for regular health checkups and repeat Hb testing as recommended\n"
+            "• No need for iron supplements unless specifically advised by your doctor",
+      };
+    }
+
+    if (s.contains("high") ||
+        s.contains("elevated") ||
+        s.contains("above normal") ||
+        s.contains("polycythemia")) {
+      if (hb >= 18.0) {
+        return {
+          "message":
+              "Your hemoglobin level is significantly above the normal range. This can increase blood thickness and may be associated "
+              "with conditions such as polycythemia, which can increase the risk of blood clots, headaches, and dizziness.",
+          "recommendation":
+              "⚠️ Medical Consultation Required:\n"
+              "• Consult a doctor or specialist as soon as possible for detailed evaluation\n"
+              "• Avoid taking any iron supplements unless they are clearly prescribed\n"
+              "• Drink adequate water to stay well-hydrated and reduce blood thickening\n"
+              "• Avoid smoking and limit alcohol intake\n"
+              "• Watch for symptoms like headaches, vision changes, chest pain, or breathlessness and seek urgent care if present",
+        };
       } else {
-        message =
-            'Your hemoglobin level is slightly elevated. This is often temporary and can be caused by dehydration, but it\'s worth monitoring.';
-        recommendation =
-            '💡 Lifestyle Adjustments:\n'
-            '• Increase fluid intake throughout the day\n'
-            '• Avoid excessive caffeine and alcohol\n'
-            '• Recheck levels after 1-2 weeks of good hydration\n'
-            '• Consult a doctor if levels remain elevated\n'
-            '• Do not take iron or other supplements without advice';
+        return {
+          "message":
+              "Your hemoglobin level is above the usual range. This can sometimes be due to dehydration, smoking, high altitude, "
+              "or an underlying medical condition.",
+          "recommendation":
+              "💡 Recommended Actions:\n"
+              "• Increase your daily fluid intake unless your doctor has restricted fluids\n"
+              "• Avoid unnecessary iron supplementation or high-iron tonics\n"
+              "• If you smoke, consider quitting and discuss support options with your doctor\n"
+              "• Schedule a consultation with your doctor to understand the cause and need for further tests\n"
+              "• Recheck hemoglobin after adequate hydration or as advised by your physician",
+        };
       }
     }
 
     return {
-      'hb': hb,
-      'status': status,
-      'message': message,
-      'recommendation': recommendation,
+      "message":
+          "Your hemoglobin level has been calculated and categorized, but the detailed category label is not recognized by the app.",
+      "recommendation":
+          "ℹ️ General Advice:\n"
+          "• Discuss this report with your doctor for personalized interpretation\n"
+          "• Maintain a balanced diet rich in iron, vitamin B12, and folate\n"
+          "• Avoid self-medicating with iron or other supplements without medical guidance\n"
+          "• Repeat testing or additional investigations may be suggested by your healthcare provider",
+    };
+  }
+
+  Map<String, dynamic> _error(double hb, String msg) {
+    return {
+      "hb": double.parse(hb.toStringAsFixed(1)),
+      "status": "error",
+      "message": msg,
+      "recommendation": "",
     };
   }
 
   Future<void> _saveScanResultToHistory({
     required double hb,
+    required double hrBpm,
     required String status,
     required String message,
     required String recommendation,
+    required String age,
+    required String weight,
+    required String gender,
+    required String mobile,
   }) async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Existing history list
     final List<String> rawHistory = prefs.getStringList('scanHistory') ?? [];
 
-    // Create a new record (stored as JSON string)
+    final now = DateTime.now().toIso8601String();
+
     final newRecord = {
       'hb': hb,
+      'hr_bpm': hrBpm,
       'status': status,
       'message': message,
       'recommendation': recommendation,
-      'date': DateTime.now().toIso8601String(),
+      'date': now,
+      'age': age,
+      'weight': weight,
+      'gender': gender,
+      'mobile': mobile,
     };
 
-    rawHistory.insert(0, newRecord.toString()); // Add newest first
+    rawHistory.insert(0, jsonEncode(newRecord));
     await prefs.setStringList('scanHistory', rawHistory);
 
-    // Also store "last scan" info for home screen
     await prefs.setDouble('lastHb', hb);
     await prefs.setString('lastStatus', status);
-    await prefs.setString('lastDate', newRecord['date']!.toString());
+    await prefs.setString('lastDate', now);
   }
 
   Future<void> _sendVideoToBackend(String videoPath) async {
@@ -470,46 +677,105 @@ class _StartRecordingState extends State<StartRecording> {
     });
 
     try {
-      print('📤 Uploading video from: $videoPath');
-      await Future.delayed(Duration(seconds: 4));
-
-      final mockHbData = generateHbStatus();
       final prefs = await SharedPreferences.getInstance();
+      final gender = prefs.getString('gender') ?? '';
+      final age = prefs.getString('age') ?? '';
+      final weight = prefs.getString('weight') ?? '';
+      final mobile = prefs.getString('mobile') ?? '';
 
-      Map<String, dynamic> mockResponse = {
-        'success': true,
-        'hemoglobin_level': mockHbData['hb'].toString(),
-        'status': mockHbData['status'],
-        'message': mockHbData['message'],
-        'timestamp': DateTime.now().toIso8601String(),
-      };
+      if (gender.isEmpty || age.isEmpty || weight.isEmpty) {
+        throw Exception(
+          'Missing user data (gender/age/weight). Please go back and fill the form again.',
+        );
+      }
+
+      print('📤 Uploading video from: $videoPath');
+
+      final uri = Uri.parse('https://hbpredictionapp.online/predict');
+      final request = http.MultipartRequest('POST', uri)
+        ..fields['gender'] = gender.toLowerCase()
+        ..fields['age'] = age
+        ..fields['weight'] = weight
+        ..files.add(
+          await http.MultipartFile.fromPath(
+            'video',
+            videoPath,
+            filename: 'scan.mp4',
+            contentType: MediaType('video', 'mp4'),
+          ),
+        );
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+
+      print('📥 Response status: ${response.statusCode}');
+      print('📥 Response body: ${response.body}');
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Server error (${response.statusCode}): ${response.body}',
+        );
+      }
+
+      final data = json.decode(response.body) as Map<String, dynamic>;
+
+      final hbPred = (data['hb_pred'] as num).toDouble();
+      final hrBpm = (data['hr_bpm'] as num).toDouble();
+
+      final hbStatus = _buildHbStatusFromValue(
+        hb: hbPred,
+        ageYears: int.tryParse(age),
+        gender: gender,
+      );
+
+      print('ℹ️ hbStatus map: $hbStatus');
+
+      double hbValue;
+      final dynamic rawHb = hbStatus['hb'];
+      if (rawHb is num) {
+        hbValue = rawHb.toDouble();
+      } else {
+        hbValue = hbPred;
+      }
+
+      final String status = hbStatus['status']?.toString() ?? 'Unknown';
+      final String message =
+          hbStatus['message']?.toString() ?? 'No detailed message.';
+      final String recommendation =
+          hbStatus['recommendation']?.toString() ?? '';
 
       await _saveScanResultToHistory(
-        hb: mockHbData['hb'],
-        status: mockHbData['status'],
-        message: mockHbData['message'],
-        recommendation: mockHbData['recommendation'],
+        hb: hbValue,
+        hrBpm: hrBpm,
+        status: status,
+        message: message,
+        recommendation: recommendation,
+        age: age,
+        weight: weight,
+        gender: gender,
+        mobile: mobile,
       );
 
       setState(() {
         _isUploading = false;
       });
 
-      print('✅ Upload complete');
+      print('✅ Upload + prediction complete');
 
       if (mounted) {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
             builder: (context) => HemoglobinResultScreen(
-              hemoglobinLevel: mockResponse['hemoglobin_level'],
-              status: mockResponse['status'],
-              message: mockResponse['message'],
-              recommendation: mockHbData['recommendation'],
-              age: prefs.getString('age') ?? '',
-              weight: prefs.getString('weight') ?? '',
-              skinColor: prefs.getString('skinColor') ?? '',
-
+              hemoglobinLevel: hbValue.toStringAsFixed(1),
+              status: status,
+              message: message,
+              recommendation: recommendation,
+              age: age,
+              weight: weight,
+              gender: gender,
+              hrBpm: hrBpm.toStringAsFixed(0),
+              mobile: mobile,
             ),
           ),
         );
@@ -518,7 +784,7 @@ class _StartRecordingState extends State<StartRecording> {
       setState(() {
         _isUploading = false;
       });
-      print('❌ Error uploading video: $e');
+      print('❌ Error uploading video / calling API: $e');
       _showErrorDialog('Error uploading video: $e');
     }
   }
@@ -529,7 +795,7 @@ class _StartRecordingState extends State<StartRecording> {
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
-          children: [
+          children: const [
             Icon(Icons.error, color: Colors.red, size: 28),
             SizedBox(width: 8),
             Text('Error'),
@@ -542,7 +808,7 @@ class _StartRecordingState extends State<StartRecording> {
               Navigator.pop(context);
               Navigator.pop(context);
             },
-            child: Text('OK', style: TextStyle(color: Color(0xFFD64545))),
+            child: const Text('OK', style: TextStyle(color: Color(0xFFD64545))),
           ),
         ],
       ),
@@ -552,8 +818,9 @@ class _StartRecordingState extends State<StartRecording> {
   @override
   void dispose() {
     print('🧹 Disposing camera resources...');
+    WidgetsBinding.instance.removeObserver(this);
     _stopTimer();
-    _cameraController?.dispose();
+    _disposeCameraController(); // async cleanup
     super.dispose();
   }
 
@@ -561,7 +828,8 @@ class _StartRecordingState extends State<StartRecording> {
   Widget build(BuildContext context) {
     return WillPopScope(
       onWillPop: () async {
-        if (_isRecording) {
+        if (_isRecording || _isStoppingRecording) {
+          // prevent popping while recording/stopping
           return false;
         }
         return true;
@@ -586,15 +854,15 @@ class _StartRecordingState extends State<StartRecording> {
                         children: [
                           IconButton(
                             onPressed: () => Navigator.pop(context),
-                            icon: Icon(
+                            icon: const Icon(
                               Icons.arrow_back,
                               size: 28,
                               color: Colors.white,
                             ),
                             padding: EdgeInsets.zero,
-                            constraints: BoxConstraints(),
+                            constraints: const BoxConstraints(),
                           ),
-                          SizedBox(width: 48),
+                          const SizedBox(width: 48),
                           IconButton(
                             onPressed: _toggleFlash,
                             icon: Icon(
@@ -603,12 +871,12 @@ class _StartRecordingState extends State<StartRecording> {
                               color: (_isFlashOn ? Colors.amber : Colors.white),
                             ),
                             padding: EdgeInsets.zero,
-                            constraints: BoxConstraints(),
+                            constraints: const BoxConstraints(),
                           ),
                         ],
                       ),
                     ),
-                    SizedBox(height: 48),
+                    const SizedBox(height: 48),
                     // Instructions - Compact
                     Container(
                       color: Colors.black,
@@ -616,7 +884,7 @@ class _StartRecordingState extends State<StartRecording> {
                         horizontal: 20.0,
                         vertical: 8,
                       ),
-                      child: Text(
+                      child: const Text(
                         'Place fingertip on camera lens. Tap to focus.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
@@ -641,31 +909,62 @@ class _StartRecordingState extends State<StartRecording> {
                       padding: const EdgeInsets.all(20.0),
                       child: Column(
                         children: [
-                          // Recording status text
                           if (_isRecording)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12.0),
                               child: Text(
                                 'Time remaining: ${_formatTime(_maxRecordingDuration - _recordingSeconds)}',
-                                style: TextStyle(
+                                style: const TextStyle(
                                   color: Colors.white70,
                                   fontSize: 14,
                                 ),
                               ),
                             ),
-                          // Start/Stop button
+
+                          if (!_isInitialized &&
+                              _errorMessage == null &&
+                              !_isUploading)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                bottom: 12.0,
+                                top: 4,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: Color(0xFFD64545),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Text(
+                                    'Setting up the camera...',
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
                           SizedBox(
                             width: double.infinity,
                             height: 56,
                             child: ElevatedButton(
                               onPressed:
                                   (_isRecording ||
+                                      _isStoppingRecording ||
                                       !_isInitialized ||
                                       _errorMessage != null)
                                   ? null
                                   : _startRecording,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: Color(0xFFD64545),
+                                backgroundColor: const Color(0xFFD64545),
                                 disabledBackgroundColor: Colors.grey[800],
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(28),
@@ -676,7 +975,7 @@ class _StartRecordingState extends State<StartRecording> {
                                 _isRecording
                                     ? 'Recording...'
                                     : 'Start Recording',
-                                style: TextStyle(
+                                style: const TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.white,
@@ -691,7 +990,6 @@ class _StartRecordingState extends State<StartRecording> {
                 ),
               ),
 
-            // Uploading overlay
             if (_isUploading)
               Container(
                 color: Colors.white,
@@ -699,7 +997,7 @@ class _StartRecordingState extends State<StartRecording> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      SizedBox(
+                      const SizedBox(
                         width: 80,
                         height: 80,
                         child: CircularProgressIndicator(
@@ -707,8 +1005,8 @@ class _StartRecordingState extends State<StartRecording> {
                           strokeWidth: 6,
                         ),
                       ),
-                      SizedBox(height: 32),
-                      Text(
+                      const SizedBox(height: 32),
+                      const Text(
                         'Analyzing Video...',
                         style: TextStyle(
                           fontSize: 24,
@@ -716,7 +1014,7 @@ class _StartRecordingState extends State<StartRecording> {
                           color: Colors.black87,
                         ),
                       ),
-                      SizedBox(height: 12),
+                      const SizedBox(height: 12),
                       Text(
                         'Please wait while we process\nyour hemoglobin reading',
                         textAlign: TextAlign.center,
@@ -726,17 +1024,17 @@ class _StartRecordingState extends State<StartRecording> {
                           height: 1.5,
                         ),
                       ),
-                      SizedBox(height: 20),
+                      const SizedBox(height: 20),
                       Container(
                         decoration: BoxDecoration(
                           border: Border.all(
-                            color: Color(0xFFD64545),
+                            color: const Color(0xFFD64545),
                             width: 1,
                           ),
                           borderRadius: BorderRadius.circular(24),
                           color: Colors.transparent,
                         ),
-                        padding: EdgeInsets.symmetric(
+                        padding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 8,
                         ),
@@ -750,8 +1048,8 @@ class _StartRecordingState extends State<StartRecording> {
                                 color: Colors.grey[500],
                               ),
                             ),
-                            SizedBox(width: 8),
-                            Icon(
+                            const SizedBox(width: 8),
+                            const Icon(
                               Icons.access_time,
                               color: Color(0xFFD64545),
                               size: 20,
@@ -779,14 +1077,18 @@ class _StartRecordingState extends State<StartRecording> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.error_outline, size: 64, color: Color(0xFFD64545)),
-                SizedBox(height: 16),
+                const Icon(
+                  Icons.error_outline,
+                  size: 64,
+                  color: Color(0xFFD64545),
+                ),
+                const SizedBox(height: 16),
                 Text(
                   _errorMessage!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16, color: Colors.white),
+                  style: const TextStyle(fontSize: 16, color: Colors.white),
                 ),
-                SizedBox(height: 24),
+                const SizedBox(height: 24),
                 ElevatedButton.icon(
                   onPressed: () {
                     setState(() {
@@ -794,12 +1096,15 @@ class _StartRecordingState extends State<StartRecording> {
                     });
                     _initializeCamera();
                   },
-                  icon: Icon(Icons.refresh),
-                  label: Text('Try Again'),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try Again'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Color(0xFFD64545),
+                    backgroundColor: const Color(0xFFD64545),
                     foregroundColor: Colors.white,
-                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 12,
+                    ),
                   ),
                 ),
               ],
@@ -812,7 +1117,7 @@ class _StartRecordingState extends State<StartRecording> {
     if (!_isInitialized || _cameraController == null) {
       return Container(
         color: Colors.black,
-        child: Center(
+        child: const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -835,7 +1140,6 @@ class _StartRecordingState extends State<StartRecording> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Full-size camera preview
               FittedBox(
                 fit: BoxFit.cover,
                 child: SizedBox(
@@ -844,8 +1148,6 @@ class _StartRecordingState extends State<StartRecording> {
                   child: CameraPreview(_cameraController!),
                 ),
               ),
-
-              // Focus circle overlay
               if (_isInitialized && _errorMessage == null)
                 Center(
                   child: Container(
@@ -853,18 +1155,19 @@ class _StartRecordingState extends State<StartRecording> {
                     height: 180,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: Color(0xFFD64545), width: 3),
+                      border: Border.all(
+                        color: const Color(0xFFD64545),
+                        width: 3,
+                      ),
                     ),
                   ),
                 ),
-
-              // Tap-to-focus indicator
               if (_showFocusCircle && _focusPoint != null)
                 Positioned(
                   left: _focusPoint!.dx - 40,
                   top: _focusPoint!.dy - 40,
                   child: TweenAnimationBuilder<double>(
-                    duration: Duration(milliseconds: 300),
+                    duration: const Duration(milliseconds: 300),
                     tween: Tween(begin: 1.5, end: 1.0),
                     builder: (context, scale, child) {
                       return Transform.scale(
@@ -876,7 +1179,7 @@ class _StartRecordingState extends State<StartRecording> {
                             shape: BoxShape.circle,
                             border: Border.all(color: Colors.white, width: 2),
                           ),
-                          child: Icon(
+                          child: const Icon(
                             Icons.center_focus_strong,
                             color: Colors.white,
                             size: 32,

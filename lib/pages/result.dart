@@ -7,14 +7,18 @@ class HemoglobinResultScreen extends StatefulWidget {
   final String message;
   final String age;
   final String weight;
-  final String skinColor;
+  final String gender;
+  final String hrBpm;
+  final String mobile;
   final String recommendation;
 
   const HemoglobinResultScreen({
     super.key,
     required this.age,
     required this.weight,
-    required this.skinColor,
+    required this.gender,
+    required this.hrBpm,
+    required this.mobile,
     required this.hemoglobinLevel,
     required this.status,
     required this.message,
@@ -28,18 +32,17 @@ class HemoglobinResultScreen extends StatefulWidget {
 class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
     with SingleTickerProviderStateMixin {
   final GlobalKey _resultKey = GlobalKey();
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _mobileController = TextEditingController();
 
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
 
-  /// ✅ Function to clear stored user data (age, weight, etc.)
+  /// ✅ Clear stored user data (age, weight, gender, mobile)
   Future<void> _resetUserData() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('age');
     await prefs.remove('weight');
-    await prefs.remove('skinColor');
+    await prefs.remove('gender');
+    await prefs.remove('mobile');
   }
 
   @override
@@ -47,7 +50,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
     super.initState();
     _fadeController = AnimationController(
       vsync: this,
-      duration: Duration(milliseconds: 800),
+      duration: const Duration(milliseconds: 800),
     );
     _fadeAnimation = CurvedAnimation(
       parent: _fadeController,
@@ -59,8 +62,6 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
   @override
   void dispose() {
     _fadeController.dispose();
-    _nameController.dispose();
-    _mobileController.dispose();
     super.dispose();
   }
 
@@ -71,10 +72,12 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
   }
 
   IconData _getStatusIcon() {
-    if (widget.status.toLowerCase() == 'normal')
+    if (widget.status.toLowerCase() == 'normal') {
       return Icons.check_circle_outline;
-    if (widget.status.toLowerCase() == 'low')
+    }
+    if (widget.status.toLowerCase() == 'low') {
       return Icons.arrow_downward_rounded;
+    }
     return Icons.arrow_upward_rounded;
   }
 
@@ -95,7 +98,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical: 20),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
+                    gradient: const LinearGradient(
                       colors: [Color(0xFFFF5F6D), Color(0xFFFFC371)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
@@ -104,13 +107,13 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   ),
                   child: Column(
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.favorite_rounded,
                         color: Colors.white,
                         size: 48,
                       ),
-                      SizedBox(height: 8),
-                      Text(
+                      const SizedBox(height: 8),
+                      const Text(
                         "HemoCheck Result",
                         style: TextStyle(
                           color: Colors.white,
@@ -119,7 +122,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                           letterSpacing: 0.5,
                         ),
                       ),
-                      SizedBox(height: 4),
+                      const SizedBox(height: 4),
                       Text(
                         "Your personalized hemoglobin analysis",
                         style: TextStyle(
@@ -131,14 +134,14 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   ),
                 ),
 
-                SizedBox(height: 30),
+                const SizedBox(height: 30),
 
                 // 📊 Result Card
                 RepaintBoundary(
                   key: _resultKey,
                   child: Container(
                     width: double.infinity,
-                    padding: EdgeInsets.all(24),
+                    padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(24),
@@ -146,7 +149,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                         BoxShadow(
                           color: Colors.red.withOpacity(0.08),
                           blurRadius: 20,
-                          offset: Offset(0, 6),
+                          offset: const Offset(0, 6),
                         ),
                       ],
                     ),
@@ -155,7 +158,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                       children: [
                         // Status Icon
                         Container(
-                          padding: EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
                             color: _getStatusColor().withOpacity(0.1),
                             shape: BoxShape.circle,
@@ -167,19 +170,19 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                           ),
                         ),
 
-                        SizedBox(height: 16),
+                        const SizedBox(height: 16),
 
                         Text(
                           "${widget.hemoglobinLevel} g/dL",
-                          style: TextStyle(
+                          style: const TextStyle(
                             fontSize: 48,
                             fontWeight: FontWeight.bold,
                             color: Color(0xFFD64545),
                           ),
                         ),
-                        SizedBox(height: 8),
+                        const SizedBox(height: 8),
                         Container(
-                          padding: EdgeInsets.symmetric(
+                          padding: const EdgeInsets.symmetric(
                             horizontal: 22,
                             vertical: 8,
                           ),
@@ -197,43 +200,92 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                           ),
                         ),
 
-                        SizedBox(height: 20),
+                        const SizedBox(height: 20),
 
-                        // 🧍 Personal Info Section
+                        // 🧍 Personal Info Section (Age, Weight, Gender, HR)
                         Container(
-                          padding: EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
                             color: Colors.grey[50],
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(color: Colors.red.shade100),
                           ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          child: Column(
                             children: [
-                              _buildInfoTile(
-                                "Age",
-                                widget.age,
-                                Icons.calendar_today,
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceAround,
+                                children: [
+                                  _buildInfoTile(
+                                    "Age",
+                                    widget.age,
+                                    Icons.calendar_today,
+                                  ),
+                                  _buildInfoTile(
+                                    "Weight",
+                                    "${widget.weight} kg",
+                                    Icons.monitor_weight_outlined,
+                                  ),
+                                ],
                               ),
-                              _buildInfoTile(
-                                "Weight",
-                                "${widget.weight} kg",
-                                Icons.monitor_weight_outlined,
-                              ),
-                              _buildInfoTile(
-                                "Skin",
-                                widget.skinColor,
-                                Icons.color_lens_outlined,
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceAround,
+                                children: [
+                                  _buildInfoTile(
+                                    "Gender",
+                                    widget.gender,
+                                    Icons.person_outline,
+                                  ),
+                                  _buildInfoTile(
+                                    "Heart Rate",
+                                    "${widget.hrBpm} bpm",
+                                    Icons.favorite_border,
+                                  ),
+                                ],
                               ),
                             ],
                           ),
                         ),
 
-                        SizedBox(height: 24),
+                        const SizedBox(height: 12),
+
+                        // 📱 Mobile (small line below info tiles)
+                        if (widget.mobile.isNotEmpty)
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4.0,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.phone_android,
+                                    size: 18,
+                                    color: Color(0xFFD64545),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    widget.mobile,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey[800],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                        const SizedBox(height: 24),
 
                         // 📄 Message
                         Container(
-                          padding: EdgeInsets.all(18),
+                          padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
                             color: Colors.red.shade50,
                             borderRadius: BorderRadius.circular(16),
@@ -254,12 +306,12 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   ),
                 ),
 
-                SizedBox(height: 20),
+                const SizedBox(height: 20),
 
                 // 💡 Recommendations Section
                 Container(
                   width: double.infinity,
-                  padding: EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(20),
@@ -267,7 +319,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                       BoxShadow(
                         color: _getStatusColor().withOpacity(0.08),
                         blurRadius: 15,
-                        offset: Offset(0, 4),
+                        offset: const Offset(0, 4),
                       ),
                     ],
                   ),
@@ -277,7 +329,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                       Row(
                         children: [
                           Container(
-                            padding: EdgeInsets.all(10),
+                            padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
                               color: _getStatusColor().withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12),
@@ -288,8 +340,8 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                               size: 24,
                             ),
                           ),
-                          SizedBox(width: 12),
-                          Text(
+                          const SizedBox(width: 12),
+                          const Text(
                             "Recommendations",
                             style: TextStyle(
                               fontSize: 20,
@@ -300,10 +352,10 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                         ],
                       ),
 
-                      SizedBox(height: 16),
+                      const SizedBox(height: 16),
 
                       Container(
-                        padding: EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: Colors.grey[50],
                           borderRadius: BorderRadius.circular(12),
@@ -323,11 +375,11 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                         ),
                       ),
 
-                      SizedBox(height: 16),
+                      const SizedBox(height: 16),
 
                       // Disclaimer
                       Container(
-                        padding: EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: Colors.amber.shade50,
                           borderRadius: BorderRadius.circular(10),
@@ -343,7 +395,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                               color: Colors.amber[800],
                               size: 20,
                             ),
-                            SizedBox(width: 10),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 "This is for informational purposes only. Always consult a healthcare professional for medical advice.",
@@ -361,7 +413,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   ),
                 ),
 
-                SizedBox(height: 24),
+                const SizedBox(height: 24),
 
                 // 🏠 Back to Home Button
                 SizedBox(
@@ -373,8 +425,8 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                       if (!mounted) return;
                       Navigator.pop(context, 'reset');
                     },
-                    icon: Icon(Icons.home_rounded, color: Colors.white),
-                    label: Text(
+                    icon: const Icon(Icons.home_rounded, color: Colors.white),
+                    label: const Text(
                       'Back to Home',
                       style: TextStyle(
                         fontSize: 16,
@@ -383,7 +435,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                       ),
                     ),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Color(0xFFD64545),
+                      backgroundColor: const Color(0xFFD64545),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
                       ),
@@ -392,7 +444,7 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
                   ),
                 ),
 
-                SizedBox(height: 16),
+                const SizedBox(height: 16),
               ],
             ),
           ),
@@ -405,17 +457,17 @@ class _HemoglobinResultScreenState extends State<HemoglobinResultScreen>
   Widget _buildInfoTile(String label, String value, IconData icon) {
     return Column(
       children: [
-        Icon(icon, color: Color(0xFFD64545), size: 28),
-        SizedBox(height: 4),
+        Icon(icon, color: const Color(0xFFD64545), size: 28),
+        const SizedBox(height: 4),
         Text(
           value,
-          style: TextStyle(
+          style: const TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 16,
             color: Colors.black87,
           ),
         ),
-        SizedBox(height: 2),
+        const SizedBox(height: 2),
         Text(
           label,
           style: TextStyle(

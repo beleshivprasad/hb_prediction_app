@@ -12,16 +12,19 @@ class StartScan extends StatefulWidget {
 
 class _StartScanState extends State<StartScan> {
   int _selectedIndex = 0;
+
   final TextEditingController _ageController = TextEditingController();
   final TextEditingController _weightController = TextEditingController();
-  String? _selectedSkinColor;
+  final TextEditingController _mobileController = TextEditingController();
+
+  String? _selectedGender;
 
   // Last saved result
   double? lastHb;
   String? lastStatus;
   String? lastDate;
 
-  final List<String> skinColors = ['Fair', 'Medium', 'Dusky', 'Dark'];
+  final List<String> genders = ['Male', 'Female', 'Other'];
 
   @override
   void initState() {
@@ -30,7 +33,6 @@ class _StartScanState extends State<StartScan> {
     _loadLastResult(); // Load only the last scan result
   }
 
-  // ✅ This will be called whenever the page becomes visible again
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -43,7 +45,8 @@ class _StartScanState extends State<StartScan> {
     setState(() {
       _ageController.clear();
       _weightController.clear();
-      _selectedSkinColor = null;
+      _mobileController.clear();
+      _selectedGender = null;
     });
   }
 
@@ -60,35 +63,63 @@ class _StartScanState extends State<StartScan> {
 
   Future<void> _saveUserData() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('age', _ageController.text);
-    await prefs.setString('weight', _weightController.text);
-    if (_selectedSkinColor != null) {
-      await prefs.setString('skinColor', _selectedSkinColor!);
+    await prefs.setString('age', _ageController.text.trim());
+    await prefs.setString('weight', _weightController.text.trim());
+    await prefs.setString('mobile', _mobileController.text.trim());
+    if (_selectedGender != null) {
+      await prefs.setString('gender', _selectedGender!);
     }
   }
 
-  void _onStartScan() async {
-    if (_ageController.text.isEmpty ||
-        _weightController.text.isEmpty ||
-        _selectedSkinColor == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.white),
-              SizedBox(width: 12),
-              Expanded(
-                child: Text('Please fill all fields before starting scan'),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.orange[700],
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
         ),
-      );
+        backgroundColor: Colors.orange[700],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  void _onStartScan() async {
+    final ageText = _ageController.text.trim();
+    final weightText = _weightController.text.trim();
+    final mobileText = _mobileController.text.trim();
+
+    // Required field checks
+    if (_selectedGender == null ||
+        ageText.isEmpty ||
+        weightText.isEmpty ||
+        mobileText.isEmpty) {
+      _showErrorSnackBar('Please fill all fields before starting scan');
+      return;
+    }
+
+    // Age validation
+    final age = int.tryParse(ageText);
+    if (age == null || age <= 0 || age > 120) {
+      _showErrorSnackBar('Please enter a valid age between 1 and 120');
+      return;
+    }
+
+    // Weight validation
+    final weight = double.tryParse(weightText);
+    if (weight == null || weight <= 0 || weight > 300) {
+      _showErrorSnackBar('Please enter a valid weight between 1 and 300 kg');
+      return;
+    }
+
+    // Mobile number validation (basic – 10 digits)
+    final mobileValid = RegExp(r'^[0-9]{10}$').hasMatch(mobileText);
+    if (!mobileValid) {
+      _showErrorSnackBar('Please enter a valid 10-digit mobile number');
       return;
     }
 
@@ -101,7 +132,7 @@ class _StartScanState extends State<StartScan> {
 
     // ✅ Reset fields after returning from recording
     _resetInputFields();
-    
+
     // ✅ Reload the last scan result after returning
     if (result != null || mounted) {
       await _loadLastResult();
@@ -112,7 +143,8 @@ class _StartScanState extends State<StartScan> {
   bool get _hasInputData {
     return _ageController.text.isNotEmpty ||
         _weightController.text.isNotEmpty ||
-        _selectedSkinColor != null;
+        _mobileController.text.isNotEmpty ||
+        _selectedGender != null;
   }
 
   Color _getStatusColor(String? status) {
@@ -125,7 +157,7 @@ class _StartScanState extends State<StartScan> {
 
   String _getRelativeTime(String? dateStr) {
     if (dateStr == null) return '';
-    
+
     try {
       final date = DateTime.parse(dateStr).toLocal();
       final now = DateTime.now();
@@ -191,7 +223,7 @@ class _StartScanState extends State<StartScan> {
                             builder: (context) => AlertDialog(
                               title: const Text('Clear All Fields?'),
                               content: const Text(
-                                'This will reset age, weight, and skin color.',
+                                'This will reset gender, age, weight, and mobile number.',
                               ),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(16),
@@ -227,7 +259,28 @@ class _StartScanState extends State<StartScan> {
 
               const SizedBox(height: 32),
 
-              // 🎂 Age Input
+              // 🧍 Gender Dropdown (1st)
+              DropdownButtonFormField<String>(
+                initialValue: _selectedGender,
+                decoration: InputDecoration(
+                  labelText: 'Gender',
+                  prefixIcon: const Icon(Icons.person_outline),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                items: genders
+                    .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                    .toList(),
+                onChanged: (value) {
+                  setState(() {
+                    _selectedGender = value;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // 🎂 Age Input (2nd)
               TextField(
                 controller: _ageController,
                 keyboardType: TextInputType.number,
@@ -252,7 +305,7 @@ class _StartScanState extends State<StartScan> {
               ),
               const SizedBox(height: 16),
 
-              // ⚖️ Weight Input
+              // ⚖️ Weight Input (3rd)
               TextField(
                 controller: _weightController,
                 keyboardType: TextInputType.number,
@@ -277,27 +330,28 @@ class _StartScanState extends State<StartScan> {
               ),
               const SizedBox(height: 16),
 
-              // 🎨 Skin Color Dropdown
-              DropdownButtonFormField<String>(
-                value: _selectedSkinColor,
+              // 📱 Mobile Number Input (4th)
+              TextField(
+                controller: _mobileController,
+                keyboardType: TextInputType.phone,
                 decoration: InputDecoration(
-                  labelText: 'Skin Color',
-                  prefixIcon: const Icon(Icons.color_lens_outlined),
+                  labelText: 'Mobile Number',
+                  prefixIcon: const Icon(Icons.phone_android_outlined),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
+                  suffixIcon: _mobileController.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear, size: 20),
+                          onPressed: () {
+                            setState(() {
+                              _mobileController.clear();
+                            });
+                          },
+                        )
+                      : null,
                 ),
-                items: skinColors
-                    .map(
-                      (color) =>
-                          DropdownMenuItem(value: color, child: Text(color)),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _selectedSkinColor = value;
-                  });
-                },
+                onChanged: (_) => setState(() {}),
               ),
 
               const SizedBox(height: 32),
@@ -365,8 +419,9 @@ class _StartScanState extends State<StartScan> {
                                   vertical: 4,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: _getStatusColor(lastStatus)
-                                      .withOpacity(0.15),
+                                  color: _getStatusColor(
+                                    lastStatus,
+                                  ).withOpacity(0.15),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: Text(
@@ -386,8 +441,9 @@ class _StartScanState extends State<StartScan> {
                               Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFD64545)
-                                      .withOpacity(0.1),
+                                  color: const Color(
+                                    0xFFD64545,
+                                  ).withOpacity(0.1),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: const Icon(
@@ -438,8 +494,9 @@ class _StartScanState extends State<StartScan> {
                                 child: Text(
                                   lastDate != null
                                       ? (() {
-                                          final dt =
-                                              DateTime.tryParse(lastDate!);
+                                          final dt = DateTime.tryParse(
+                                            lastDate!,
+                                          );
                                           if (dt == null) return '-';
                                           final months = [
                                             'Jan',
@@ -455,20 +512,22 @@ class _StartScanState extends State<StartScan> {
                                             'Nov',
                                             'Dec',
                                           ];
-                                          final day =
-                                              dt.day.toString().padLeft(2, '0');
+                                          final day = dt.day.toString().padLeft(
+                                            2,
+                                            '0',
+                                          );
                                           final month = months[dt.month - 1];
                                           final year = dt.year;
                                           int hour = dt.hour;
                                           final minute = dt.minute
                                               .toString()
                                               .padLeft(2, '0');
-                                          final ampm =
-                                              hour >= 12 ? 'PM' : 'AM';
+                                          final ampm = hour >= 12 ? 'PM' : 'AM';
                                           hour = hour % 12;
                                           if (hour == 0) hour = 12;
-                                          final hourStr =
-                                              hour.toString().padLeft(2, '0');
+                                          final hourStr = hour
+                                              .toString()
+                                              .padLeft(2, '0');
                                           return '$day $month $year • $hourStr:$minute $ampm';
                                         })()
                                       : '-',

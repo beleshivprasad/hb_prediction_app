@@ -7,59 +7,120 @@ class ScanDetailsPage extends StatelessWidget {
 
   Color _getStatusColor(String status) {
     final lower = status.toLowerCase();
-    if (lower == 'normal') return Colors.green;
-    if (lower == 'low') return Colors.orange;
-    return Colors.red;
+    if (lower.contains('normal')) return Colors.green;
+    if (lower.contains('mild')) return Colors.orange;
+    if (lower.contains('moderate') || lower.contains('severe')) {
+      return Colors.red.shade700;
+    }
+    if (lower.contains('low')) return Colors.orange;
+    if (lower.contains('high')) return Colors.red;
+    return Colors.grey;
   }
 
   IconData _getStatusIcon(String status) {
     final lower = status.toLowerCase();
-    if (lower == 'normal') return Icons.check_circle_outline;
-    if (lower == 'low') return Icons.arrow_downward_rounded;
-    return Icons.arrow_upward_rounded;
+    if (lower.contains('normal')) return Icons.check_circle_outline;
+    if (lower.contains('low') || lower.contains('anemia')) {
+      return Icons.arrow_downward_rounded;
+    }
+    if (lower.contains('high')) return Icons.arrow_upward_rounded;
+    return Icons.bloodtype_rounded;
+  }
+
+  String ceilValue(dynamic value) {
+    if (value == null) return "--";
+
+    final num? number = num.tryParse(value.toString());
+    if (number == null) return "--";
+
+    return number.ceil().toString();
+  }
+
+  String _formatDate(String isoString) {
+    try {
+      final dt = DateTime.parse(isoString).toLocal();
+      final months = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ];
+      final day = dt.day.toString().padLeft(2, '0');
+      final month = months[dt.month - 1];
+      final year = dt.year;
+      int hour = dt.hour;
+      final minute = dt.minute.toString().padLeft(2, '0');
+      final ampm = hour >= 12 ? 'PM' : 'AM';
+      hour = hour % 12;
+      if (hour == 0) hour = 12;
+      final hourStr = hour.toString().padLeft(2, '0');
+      return '$day $month $year $hourStr:$minute $ampm';
+    } catch (_) {
+      return 'Unknown Date';
+    }
+  }
+
+  String _relativeTime(String isoString) {
+    try {
+      final date = DateTime.parse(isoString).toLocal();
+      final now = DateTime.now();
+      final diff = now.difference(date);
+
+      if (diff.inDays == 0) {
+        if (diff.inHours == 0) {
+          if (diff.inMinutes < 1) return 'Just now';
+          return '${diff.inMinutes} min ago';
+        }
+        return '${diff.inHours} h ago';
+      } else if (diff.inDays == 1) {
+        return 'Yesterday';
+      } else if (diff.inDays < 7) {
+        return '${diff.inDays} days ago';
+      } else if (diff.inDays < 30) {
+        final weeks = (diff.inDays / 7).floor();
+        return '$weeks ${weeks == 1 ? 'week' : 'weeks'} ago';
+      } else {
+        final months = (diff.inDays / 30).floor();
+        return '$months ${months == 1 ? 'month' : 'months'} ago';
+      }
+    } catch (_) {
+      return '';
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final hb = record['hb'] ?? 'N/A';
-    final status = record['status'] ?? 'Unknown';
-    final date = record['date'] ?? '';
-    final message = record['message'] ?? 'No message available.';
-    final recommendation = record['recommendation'] ?? '';
-    final age = record['age'] ?? '';
-    final weight = record['weight'] ?? '';
-    final skinColor = record['skinColor'] ?? '';
+    final hb = record['hb']?.toString() ?? 'N/A';
+    final status = (record['status'] ?? 'Unknown').toString();
+    final date = (record['date'] ?? '').toString();
+    final message = (record['message'] ?? 'No message available.').toString();
+    final recommendation = (record['recommendation'] ?? '').toString();
 
-    final parsedDate = date.isNotEmpty
-        ? (() {
-            final dt = DateTime.tryParse(date);
-            if (dt == null) return 'Unknown Date';
-            final months = [
-              'Jan',
-              'Feb',
-              'Mar',
-              'Apr',
-              'May',
-              'Jun',
-              'Jul',
-              'Aug',
-              'Sep',
-              'Oct',
-              'Nov',
-              'Dec',
-            ];
-            final day = dt.day.toString().padLeft(2, '0');
-            final month = months[dt.month - 1];
-            final year = dt.year;
-            int hour = dt.hour;
-            final minute = dt.minute.toString().padLeft(2, '0');
-            final ampm = hour >= 12 ? 'PM' : 'AM';
-            hour = hour % 12;
-            if (hour == 0) hour = 12;
-            final hourStr = hour.toString().padLeft(2, '0');
-            return '$day $month $year $hourStr:$minute $ampm';
-          })()
-        : 'Unknown Date';
+    // Newly saved fields (may be absent in older records)
+    final age = record['age']?.toString() ?? '';
+    final weight = record['weight']?.toString() ?? '';
+    final gender = record['gender']?.toString() ?? '';
+    final hrBpm = record['hr_bpm']?.toString() ?? '';
+    final mobile = record['mobile']?.toString() ?? '';
+
+    final formattedDate = date.isNotEmpty ? _formatDate(date) : 'Unknown Date';
+    final relative = date.isNotEmpty ? _relativeTime(date) : '';
+
+    final statusColor = _getStatusColor(status);
+
+    final hasSummaryInfo =
+        age.isNotEmpty ||
+        gender.isNotEmpty ||
+        weight.isNotEmpty ||
+        mobile.isNotEmpty;
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -109,17 +170,62 @@ class ScanDetailsPage extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      "Scan from $parsedDate",
+                      formattedDate,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.8),
+                        color: Colors.white.withOpacity(0.85),
                         fontSize: 14,
                       ),
                     ),
+                    if (relative.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        relative,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.8),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+
+                    // 🔹 compact chips for Age / Gender / Weight / Mobile
+                    if (hasSummaryInfo) ...[
+                      const SizedBox(height: 10),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            if (age.isNotEmpty)
+                              _buildSummaryChip(
+                                icon: Icons.calendar_today,
+                                label: "Age: $age",
+                              ),
+                            if (gender.isNotEmpty)
+                              _buildSummaryChip(
+                                icon: Icons.person_outline,
+                                label: "Gender: $gender",
+                              ),
+                            if (weight.isNotEmpty)
+                              _buildSummaryChip(
+                                icon: Icons.monitor_weight_outlined,
+                                label: "Weight: $weight kg",
+                              ),
+                            if (mobile.isNotEmpty)
+                              _buildSummaryChip(
+                                icon: Icons.phone_android,
+                                label: mobile,
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
 
-              const SizedBox(height: 30),
+              const SizedBox(height: 24),
 
               // 📊 Result Card
               Container(
@@ -143,12 +249,12 @@ class ScanDetailsPage extends StatelessWidget {
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: _getStatusColor(status).withOpacity(0.1),
+                        color: statusColor.withOpacity(0.1),
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
                         _getStatusIcon(status),
-                        color: _getStatusColor(status),
+                        color: statusColor,
                         size: 40,
                       ),
                     ),
@@ -164,65 +270,115 @@ class ScanDetailsPage extends StatelessWidget {
                         color: Color(0xFFD64545),
                       ),
                     ),
+
                     const SizedBox(height: 8),
 
-                    // 🔵 Status Badge
+                    // Status badge
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 22,
                         vertical: 8,
                       ),
                       decoration: BoxDecoration(
-                        color: _getStatusColor(status).withOpacity(0.15),
+                        color: statusColor.withOpacity(0.15),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
                         status.toUpperCase(),
                         style: TextStyle(
-                          color: _getStatusColor(status),
+                          color: statusColor,
                           fontWeight: FontWeight.w700,
-                          fontSize: 16,
+                          fontSize: 15,
+                          letterSpacing: 0.5,
                         ),
                       ),
                     ),
 
                     const SizedBox(height: 20),
 
-                    // 🧍 Personal Info Section (if available)
+                    // 🧍 Personal Info Section (detailed)
                     if (age.isNotEmpty ||
                         weight.isNotEmpty ||
-                        skinColor.isNotEmpty)
+                        gender.isNotEmpty ||
+                        hrBpm.isNotEmpty ||
+                        mobile.isNotEmpty)
                       Container(
+                        width: double.infinity,
                         padding: const EdgeInsets.all(16),
-                        margin: const EdgeInsets.only(bottom: 20),
+                        margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
                           color: Colors.grey[50],
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(color: Colors.red.shade100),
                         ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        child: Column(
                           children: [
-                            if (age.isNotEmpty)
-                              _buildInfoTile("Age", age, Icons.calendar_today),
-                            if (weight.isNotEmpty)
-                              _buildInfoTile(
-                                "Weight",
-                                "$weight kg",
-                                Icons.monitor_weight_outlined,
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceAround,
+                              children: [
+                                if (age.isNotEmpty)
+                                  _buildInfoTile(
+                                    "Age",
+                                    age,
+                                    Icons.calendar_today,
+                                  ),
+                                if (gender.isNotEmpty)
+                                  _buildInfoTile(
+                                    "Gender",
+                                    gender,
+                                    Icons.person_outline,
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceAround,
+                              children: [
+                                if (weight.isNotEmpty)
+                                  _buildInfoTile(
+                                    "Weight",
+                                    "$weight kg",
+                                    Icons.monitor_weight_outlined,
+                                  ),
+                                if (hrBpm.isNotEmpty)
+                                  _buildInfoTile(
+                                    "Heart Rate",
+                                    "${ceilValue(hrBpm)} bpm",
+                                    Icons.favorite_border,
+                                  ),
+                              ],
+                            ),
+                            if (mobile.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.phone_android,
+                                    size: 18,
+                                    color: Color(0xFFD64545),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    mobile,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey[800],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            if (skinColor.isNotEmpty)
-                              _buildInfoTile(
-                                "Skin",
-                                skinColor,
-                                Icons.color_lens_outlined,
-                              ),
+                            ],
                           ],
                         ),
                       ),
 
+                    const SizedBox(height: 8),
+
                     // 💬 Message Section
                     Container(
+                      width: double.infinity,
                       padding: const EdgeInsets.all(18),
                       decoration: BoxDecoration(
                         color: Colors.red.shade50,
@@ -254,7 +410,7 @@ class ScanDetailsPage extends StatelessWidget {
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: [
                       BoxShadow(
-                        color: _getStatusColor(status).withOpacity(0.08),
+                        color: statusColor.withOpacity(0.08),
                         blurRadius: 15,
                         offset: const Offset(0, 4),
                       ),
@@ -268,12 +424,12 @@ class ScanDetailsPage extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: _getStatusColor(status).withOpacity(0.1),
+                              color: statusColor.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Icon(
                               Icons.lightbulb_outline_rounded,
-                              color: _getStatusColor(status),
+                              color: statusColor,
                               size: 24,
                             ),
                           ),
@@ -295,18 +451,13 @@ class ScanDetailsPage extends StatelessWidget {
                           color: Colors.grey[50],
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: _getStatusColor(status).withOpacity(0.2),
+                            color: statusColor.withOpacity(0.2),
                             width: 1.5,
                           ),
                         ),
-                        child: Text(
+                        child: _buildRecommendationContent(
                           recommendation,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey[800],
-                            height: 1.8,
-                            fontWeight: FontWeight.w500,
-                          ),
+                          statusColor,
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -408,6 +559,104 @@ class ScanDetailsPage extends StatelessWidget {
             fontWeight: FontWeight.w500,
           ),
         ),
+      ],
+    );
+  }
+
+  /// Chips in the header for quick summary
+  Widget _buildSummaryChip({required IconData icon, required String label}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: Colors.white),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Nicely formats all recommendation lines (title + bullet list)
+  Widget _buildRecommendationContent(String recommendation, Color accent) {
+    final lines = recommendation
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    if (lines.isEmpty) {
+      return Text(
+        recommendation,
+        style: TextStyle(
+          fontSize: 14,
+          color: Colors.grey[800],
+          height: 1.8,
+          fontWeight: FontWeight.w500,
+        ),
+      );
+    }
+
+    final title = lines.first;
+    final bullets = lines.length > 1 ? lines.sublist(1) : <String>[];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: accent,
+            height: 1.4,
+          ),
+        ),
+        if (bullets.isNotEmpty) const SizedBox(height: 10),
+        ...bullets.map((line) {
+          String cleaned = line;
+          if (cleaned.startsWith('•')) {
+            cleaned = cleaned.substring(1).trim();
+          } else if (cleaned.startsWith('-')) {
+            cleaned = cleaned.substring(1).trim();
+          }
+
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 6.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '• ',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+                Expanded(
+                  child: Text(
+                    cleaned,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[800],
+                      height: 1.6,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
       ],
     );
   }
