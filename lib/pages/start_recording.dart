@@ -10,6 +10,10 @@ import 'dart:io'; // ✅ for video size
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_compress/video_compress.dart'; // ✅ for compression
+
+// ✅ Processing phases for nicer UI messages
+enum _ProcessingStage { none, compressing, uploading }
 
 class StartRecording extends StatefulWidget {
   const StartRecording({super.key});
@@ -25,7 +29,6 @@ class _StartRecordingState extends State<StartRecording>
   bool _isRecording = false;
   bool _isFlashOn = true;
   XFile? _videoFile;
-  bool _isUploading = false;
   String? _errorMessage;
 
   // Timer variables
@@ -39,6 +42,21 @@ class _StartRecordingState extends State<StartRecording>
 
   // ✅ Guard to avoid double stop
   bool _isStoppingRecording = false;
+
+  // ✅ PPG-safe targets: try for ~5 MB, allow up to ~8 MB if needed
+  static const int _softMaxFileSizeBytes = 5 * 1024 * 1024;
+  static const int _hardMaxFileSizeBytes = 8 * 1024 * 1024;
+
+  // ✅ Processing state (for compressing vs uploading UI)
+  _ProcessingStage _processingStage = _ProcessingStage.none;
+
+  // ✅ Single source of truth: is the camera really ready?
+  bool get _isCameraReady {
+    final c = _cameraController;
+    if (c == null) return false;
+    final v = c.value;
+    return v.isInitialized && !v.hasError;
+  }
 
   @override
   void initState() {
@@ -56,8 +74,9 @@ class _StartRecordingState extends State<StartRecording>
       _stopTimer();
       _disposeCameraController();
     } else if (state == AppLifecycleState.resumed) {
-      // App back – re-init if not uploading and controller is null
-      if (!_isUploading && _cameraController == null) {
+      // App back – re-init if not processing and controller is null
+      if (_processingStage == _ProcessingStage.none &&
+          _cameraController == null) {
         _initializeCamera();
       }
     }
@@ -134,10 +153,10 @@ class _StartRecordingState extends State<StartRecording>
 
       print('🎯 Selected camera: ${backCamera.name}');
 
-      // ✅ Prefer 720p (ResolutionPreset.high ~ 720p)
+      // ✅ Use a single preset: ResolutionPreset.high (~720p / device-dependent)
       final controller = CameraController(
         backCamera,
-        ResolutionPreset.high, // 720p on most devices
+        ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
@@ -152,6 +171,21 @@ class _StartRecordingState extends State<StartRecording>
         await controller.dispose();
         return;
       }
+
+      // ✅ Listen for camera runtime errors
+      controller.addListener(() {
+        final v = controller.value;
+        if (!mounted) return;
+
+        if (v.hasError) {
+          print('📛 Camera error: ${v.errorDescription}');
+          setState(() {
+            _errorMessage =
+                'Camera error: ${v.errorDescription ?? "Unknown error"}';
+            _isInitialized = false;
+          });
+        }
+      });
 
       // Set focus mode to auto
       try {
@@ -320,10 +354,15 @@ class _StartRecordingState extends State<StartRecording>
   }
 
   Future<void> _startRecording() async {
+    if (!_isCameraReady) {
+      print('🚫 _startRecording called but camera not ready');
+      return;
+    }
+
     if (_cameraController != null &&
-        _cameraController!.value.isInitialized &&
         !_isRecording &&
-        !_isStoppingRecording) {
+        !_isStoppingRecording &&
+        _processingStage == _ProcessingStage.none) {
       try {
         print('🎬 Starting video recording...');
         await _cameraController!.startVideoRecording();
@@ -337,7 +376,104 @@ class _StartRecordingState extends State<StartRecording>
         print('❌ Error starting recording: $e');
         _showErrorDialog('Failed to start recording: $e');
       }
+    } else {
+      print(
+        '🚫 _startRecording blocked by state: controller=$_cameraController, '
+        'isRecording=$_isRecording, isStopping=$_isStoppingRecording, '
+        'processingStage=$_processingStage',
+      );
     }
+  }
+
+  /// ✅ PPG-safe compression:
+  /// - Avoid over-aggressive quality loss
+  /// - Prefer mild downscale + medium quality
+  /// - Use soft & hard targets to keep enough signal quality
+  Future<File> _compressVideoToTarget(String path) async {
+    final original = File(path);
+    final originalSize = await original.length();
+    print('📦 Original file size: $originalSize bytes');
+
+    // 1) If already < soft target → no compression at all
+    if (originalSize <= _softMaxFileSizeBytes) {
+      print('✅ Original file already under soft target size');
+      return original;
+    }
+
+    // 2) Define a gentle -> aggressive ordering.
+    //    NOTE: We try to stay in "medium" quality as long as possible.
+    final qualities = <VideoQuality>[
+      // Prefer a fixed resolution around 720p / 480p with medium quality
+      VideoQuality.Res640x480Quality, // downscale but decent
+      VideoQuality.MediumQuality,
+      // Only then try more aggressive low-quality
+      VideoQuality.LowQuality,
+    ];
+
+    File? bestFile;
+    int bestSize = originalSize;
+
+    for (final q in qualities) {
+      print('📉 Compressing with quality: $q');
+
+      final info = await VideoCompress.compressVideo(
+        path,
+        quality: q,
+        includeAudio: false,
+        deleteOrigin: false,
+      );
+
+      if (info == null || info.file == null) {
+        print('⚠️ Compression failed for quality: $q');
+        continue;
+      }
+
+      final f = info.file!;
+      final size = await f.length();
+      print('➡️ Size after $q: $size bytes');
+
+      // Track best (smallest) file we have seen
+      if (size < bestSize) {
+        bestFile = f;
+        bestSize = size;
+      }
+
+      // If we are now below soft target → great, stop here
+      if (size <= _softMaxFileSizeBytes) {
+        print('✅ Reached soft target size with $q');
+        return f;
+      }
+
+      // If we are below hard max and this is a "reasonable" quality step,
+      // we prefer not to go more aggressive to protect PPG quality.
+      final isMediumish =
+          q == VideoQuality.Res640x480Quality ||
+          q == VideoQuality.MediumQuality;
+
+      if (size <= _hardMaxFileSizeBytes && isMediumish) {
+        print(
+          '✅ Size is acceptable (< hard max) after $q. '
+          'Keeping better PPG signal rather than over-compressing.',
+        );
+        return f;
+      }
+    }
+
+    // 3) If we get here, we never reached soft or hard target.
+    //    Use the best (smallest) we got, as long as it's not larger than original.
+    if (bestFile != null && bestSize < originalSize) {
+      print(
+        '⚠️ Could not reach target size safely, '
+        'using best achieved size: $bestSize bytes',
+      );
+      return bestFile;
+    }
+
+    // 4) Last resort: keep original
+    print(
+      '⚠️ All compression attempts failed or not beneficial, using original file',
+    );
+    return original;
   }
 
   Future<void> _stopRecording() async {
@@ -364,25 +500,22 @@ class _StartRecordingState extends State<StartRecording>
 
       final controller = _cameraController!;
 
-      if (!controller.value.isRecordingVideo) {
-        print(
-          '⚠️ Controller not in recording state, skip stopVideoRecording()',
-        );
-      } else {
-        _videoFile = await controller.stopVideoRecording();
-        print('✅ Recording stopped. File: ${_videoFile!.path}');
-      }
+      // ✅ Always try to stop and get the file
+      _videoFile = await controller.stopVideoRecording();
+      print('✅ Recording stopped. File: ${_videoFile!.path}');
 
       if (_videoFile == null) {
         throw Exception('No video file returned from stopVideoRecording()');
       }
 
-      // ✅ Print video size
+      // ✅ Print original video size
       try {
         final file = File(_videoFile!.path);
         final bytes = await file.length();
         final sizeMB = bytes / (1024 * 1024);
-        print('📁 Video size: $bytes bytes (${sizeMB.toStringAsFixed(2)} MB)');
+        print(
+          '📁 Original video size: $bytes bytes (${sizeMB.toStringAsFixed(2)} MB)',
+        );
       } catch (e) {
         print('⚠️ Could not read video file size: $e');
       }
@@ -403,10 +536,52 @@ class _StartRecordingState extends State<StartRecording>
         print('⚠️ Error turning flash off after recording: $e');
       }
 
-      await _sendVideoToBackend(_videoFile!.path);
+      // ✅ Show "compressing" loader immediately
+      if (mounted) {
+        setState(() {
+          _processingStage = _ProcessingStage.compressing;
+        });
+      }
+
+      // ✅ Compress then send to backend (PPG-safe compression)
+      try {
+        final compressedFile = await _compressVideoToTarget(_videoFile!.path);
+        final compressedBytes = await compressedFile.length();
+        final compressedMB = compressedBytes / (1024 * 1024);
+        print(
+          '📁 Final video size to upload: $compressedBytes bytes (${compressedMB.toStringAsFixed(2)} MB)',
+        );
+
+        // ✅ Now switch to "uploading / analyzing" stage
+        if (mounted) {
+          setState(() {
+            _processingStage = _ProcessingStage.uploading;
+          });
+        }
+
+        await _sendVideoToBackend(compressedFile.path);
+      } catch (e) {
+        print('⚠️ Compression failed, sending original file: $e');
+
+        if (mounted) {
+          setState(() {
+            _processingStage = _ProcessingStage.uploading;
+          });
+        }
+
+        await _sendVideoToBackend(_videoFile!.path);
+      }
     } catch (e) {
       print('❌ Error stopping recording: $e');
-      _showErrorDialog('Failed to stop recording: $e');
+      if (mounted) {
+        setState(() {
+          _isRecording = false; // ✅ let user try again
+          _processingStage = _ProcessingStage.none;
+        });
+      }
+      _showErrorDialog(
+        'Failed to stop recording. Please try again.\n\nDetails: $e',
+      );
     } finally {
       _isStoppingRecording = false;
     }
@@ -671,8 +846,8 @@ class _StartRecordingState extends State<StartRecording>
   }
 
   Future<void> _sendVideoToBackend(String videoPath) async {
+    // We are already in uploading stage; just ensure camera UI is not used
     setState(() {
-      _isUploading = true;
       _isInitialized = false;
     });
 
@@ -756,9 +931,11 @@ class _StartRecordingState extends State<StartRecording>
         mobile: mobile,
       );
 
-      setState(() {
-        _isUploading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _processingStage = _ProcessingStage.none;
+        });
+      }
 
       print('✅ Upload + prediction complete');
 
@@ -781,9 +958,11 @@ class _StartRecordingState extends State<StartRecording>
         );
       }
     } catch (e) {
-      setState(() {
-        _isUploading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _processingStage = _ProcessingStage.none;
+        });
+      }
       print('❌ Error uploading video / calling API: $e');
       _showErrorDialog('Error uploading video: $e');
     }
@@ -821,15 +1000,20 @@ class _StartRecordingState extends State<StartRecording>
     WidgetsBinding.instance.removeObserver(this);
     _stopTimer();
     _disposeCameraController(); // async cleanup
+    VideoCompress.dispose(); // 🔚 cleanup compression isolates (no await)
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final bool isReady = _isCameraReady;
+    final bool isProcessing = _processingStage != _ProcessingStage.none;
+    final bool isCompressing = _processingStage == _ProcessingStage.compressing;
+
     return WillPopScope(
       onWillPop: () async {
-        if (_isRecording || _isStoppingRecording) {
-          // prevent popping while recording/stopping
+        if (_isRecording || _isStoppingRecording || isProcessing) {
+          // prevent popping while recording or processing
           return false;
         }
         return true;
@@ -838,7 +1022,7 @@ class _StartRecordingState extends State<StartRecording>
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            if (!_isUploading)
+            if (!isProcessing)
               SafeArea(
                 child: Column(
                   children: [
@@ -921,9 +1105,8 @@ class _StartRecordingState extends State<StartRecording>
                               ),
                             ),
 
-                          if (!_isInitialized &&
-                              _errorMessage == null &&
-                              !_isUploading)
+                          // Show “setting up camera” if not ready yet
+                          if (!isReady && _errorMessage == null)
                             Padding(
                               padding: const EdgeInsets.only(
                                 bottom: 12.0,
@@ -931,8 +1114,8 @@ class _StartRecordingState extends State<StartRecording>
                               ),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const SizedBox(
+                                children: const [
+                                  SizedBox(
                                     width: 20,
                                     height: 20,
                                     child: CircularProgressIndicator(
@@ -940,8 +1123,8 @@ class _StartRecordingState extends State<StartRecording>
                                       color: Color(0xFFD64545),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
-                                  const Text(
+                                  SizedBox(width: 10),
+                                  Text(
                                     'Setting up the camera...',
                                     style: TextStyle(
                                       color: Colors.white70,
@@ -959,7 +1142,7 @@ class _StartRecordingState extends State<StartRecording>
                               onPressed:
                                   (_isRecording ||
                                       _isStoppingRecording ||
-                                      !_isInitialized ||
+                                      !isReady ||
                                       _errorMessage != null)
                                   ? null
                                   : _startRecording,
@@ -990,7 +1173,7 @@ class _StartRecordingState extends State<StartRecording>
                 ),
               ),
 
-            if (_isUploading)
+            if (isProcessing)
               Container(
                 color: Colors.white,
                 child: Center(
@@ -1006,9 +1189,11 @@ class _StartRecordingState extends State<StartRecording>
                         ),
                       ),
                       const SizedBox(height: 32),
-                      const Text(
-                        'Analyzing Video...',
-                        style: TextStyle(
+                      Text(
+                        isCompressing
+                            ? 'Preparing Video...'
+                            : 'Analyzing Video...',
+                        style: const TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
                           color: Colors.black87,
@@ -1016,7 +1201,9 @@ class _StartRecordingState extends State<StartRecording>
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Please wait while we process\nyour hemoglobin reading',
+                        isCompressing
+                            ? 'Compressing your scan so we can securely\nupload it to our server.'
+                            : 'Please wait while we process\nyour hemoglobin reading',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 16,
@@ -1042,7 +1229,9 @@ class _StartRecordingState extends State<StartRecording>
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              'This may take up to 30 seconds',
+                              isCompressing
+                                  ? 'Optimizing video for upload...'
+                                  : 'This may take up to 30 seconds',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey[500],
@@ -1114,7 +1303,7 @@ class _StartRecordingState extends State<StartRecording>
       );
     }
 
-    if (!_isInitialized || _cameraController == null) {
+    if (!_isCameraReady || _cameraController == null) {
       return Container(
         color: Colors.black,
         child: const Center(
@@ -1148,7 +1337,7 @@ class _StartRecordingState extends State<StartRecording>
                   child: CameraPreview(_cameraController!),
                 ),
               ),
-              if (_isInitialized && _errorMessage == null)
+              if (_isCameraReady && _errorMessage == null)
                 Center(
                   child: Container(
                     width: 180,
